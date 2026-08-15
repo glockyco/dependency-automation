@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "repositories": [
+    {
+      "repository": "nix-config",
+      "branch": "automation/update-nix-dependencies",
+      "paths": ["flake.lock"],
+      "commands": [["nix", "flake", "update"]]
+    },
+    {
+      "repository": "omp-agent-setup",
+      "branch": "automation/update-nix-dependencies",
+      "paths": ["flake.lock"],
+      "commands": [["nix", "flake", "update"]]
+    },
+    {
+      "repository": "erenshor-data-mining",
+      "branch": "automation/update-nix-dependencies",
+      "paths": ["flake.lock", "package.json"],
+      "commands": [
+        ["nix", "flake", "update"],
+        ["nix", "run", ".#sync-pnpm-version"]
+      ]
+    }
+  ]
+}

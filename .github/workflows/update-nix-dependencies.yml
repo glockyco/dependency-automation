@@ -1,0 +1,105 @@
+name: Update Nix dependencies
+
+on:
+  schedule:
+    - cron: "0 4 * * 6"
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Repository name or "all"
+        required: true
+        default: all
+        type: string
+
+concurrency:
+  group: update-nix-dependencies
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  registry:
+    name: Select repositories
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout automation policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build update matrix
+        id: matrix
+        env:
+          TARGET: ${{ inputs.repository || 'all' }}
+        run: |
+          matrix="$(python3 automation.py matrix --target "$TARGET")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  update:
+    name: Update ${{ matrix.repository }}
+    needs: registry
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.registry.outputs.matrix) }}
+    steps:
+      - name: Checkout automation policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create repository-scoped updater token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEPENDENCY_UPDATER_CLIENT_ID }}
+          private-key: ${{ secrets.DEPENDENCY_UPDATER_PRIVATE_KEY }}
+          owner: glockyco
+          repositories: ${{ matrix.repository }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Checkout managed repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: glockyco/${{ matrix.repository }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3.21.9
+
+      - name: Refresh and validate managed state
+        run: >-
+          python3 automation.py update
+          --repository "${{ matrix.repository }}"
+          --checkout target
+
+      - name: Create or update review pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          path: target
+          add-paths: ${{ join(matrix.paths, '\n') }}
+          base: main
+          branch: ${{ matrix.branch }}
+          delete-branch: true
+          sign-commits: true
+          commit-message: |
+            chore(nix): update locked inputs
+
+            Refresh the complete Nix lock and every declared matching assertion.
+          title: "chore(nix): update locked inputs"
+          body: |
+            Automated complete Nix dependency update from the central policy in
+            `glockyco/dependency-automation`.
+
+            This pull request is review-only. Merge only after the managed
+            repository's required CI checks pass.
+
+            Source run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
