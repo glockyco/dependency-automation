@@ -75,17 +75,24 @@ jobs:
         uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3.21.9
 
       - name: Refresh and validate managed state
-        run: >-
-          python3 automation.py update
-          --repository "${{ matrix.repository }}"
-          --checkout target
+        id: refresh
+        run: |
+          python3 automation.py update \
+            --repository "${{ matrix.repository }}" \
+            --checkout target
+          if [ -n "$(git -C target status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create or update review pull request
+        id: pull-request
+        if: steps.refresh.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: target
-          add-paths: ${{ join(matrix.paths, '\n') }}
           base: main
           branch: ${{ matrix.branch }}
           delete-branch: true
@@ -103,3 +110,16 @@ jobs:
             repository's required CI checks pass.
 
             Source run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Verify pull request operation
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          OPERATION: ${{ steps.pull-request.outputs.pull-request-operation }}
+        run: |
+          case "$OPERATION" in
+            created|updated) ;;
+            *)
+              echo "Expected a created or updated pull request, got: ${OPERATION:-none}" >&2
+              exit 1
+              ;;
+          esac
