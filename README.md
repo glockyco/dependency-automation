@@ -5,6 +5,11 @@ Hosted Renovate remains the owner of native package managers and GitHub Actions.
 This repository owns scheduled Nix updates that Renovate cannot complete with all
 required generated state.
 
+The repository is public so GitHub enforces branch protection on the personal
+account plan. Its main branch requires the `Validate` check for every actor. No
+credential is stored in Git, and pull-request workflows never receive the App
+private key.
+
 ## Architecture
 
 The private `glockyco-dependency-updater` GitHub App is the only publishing
