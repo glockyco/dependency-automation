@@ -1,80 +1,16 @@
 # Dependency Automation
 
-Central control plane for dependency updates that require repository write access.
-Hosted Renovate remains the owner of native package managers and GitHub Actions.
-This repository owns scheduled Nix updates that Renovate cannot complete with all
-required generated state.
+Dependency Automation opens Nix dependency update pull requests for the glockyco repositories listed in [repositories.json](repositories.json). It is a GitHub Actions controller, not an updater to install in each project. Hosted Renovate handles native package managers and GitHub Actions separately.
 
-The repository is public so GitHub enforces branch protection on the personal
-account plan. Its main branch requires the `Validate` check for every actor. No
-credential is stored in Git, and pull-request workflows never receive the App
-private key.
+## Run updates
 
-## Architecture
-
-The private `glockyco-dependency-updater` GitHub App is the only publishing
-identity. The App is installed only on managed repositories and has these
-repository permissions:
-
-- Metadata: read
-- Contents: read and write
-- Pull requests: read and write
-
-The App private key exists only as the `DEPENDENCY_UPDATER_PRIVATE_KEY` secret in
-this repository. `DEPENDENCY_UPDATER_CLIENT_ID` is an Actions variable. Each
-matrix job mints a token for one target repository. The token expires after one
-hour and is revoked when the job ends.
-
-This design keeps the App key out of every target repository. A compromised
-target workflow cannot use the key to write to another managed repository. The
-workflow does not use a personal access token or a target repository's default
-workflow token.
-
-`repositories.json` is the complete registry. Each entry declares:
-
-- the target repository;
-- one stable automation branch;
-- the only paths that the update may change;
-- commands as argument arrays, never shell text.
-
-`automation.py` validates the registry, runs a complete `nix flake update`, and
-fails if a command changes an undeclared path. The GitHub App then creates or
-refreshes one review-only pull request. App-authored pull requests start the
-target repository's normal CI. This repository does not merge them.
-
-The controller is centralized, but dependency closure and verification remain
-repository-owned. The registry includes a project-specific command only when a
-Nix update must regenerate matching state. For example,
-`erenshor-data-mining` synchronizes its exact pnpm assertion after updating the
-flake lock. This is an explicit dependency boundary, not a second updater.
-
-## Managed repositories
-
-| Repository | Managed state | Extra regeneration |
-| --- | --- | --- |
-| `nix-config` | `flake.lock` | None |
-| `omp-agent-setup` | `flake.lock` | None |
-| `erenshor-data-mining` | `flake.lock`, `package.json` | Exact Nix-provided pnpm version |
-
-Other repositories remain outside the App installation until their dependency
-boundary and CI contract are reviewed:
-
-| Repository | Current boundary |
-| --- | --- |
-| `ardenfall-compendium` | Nix toolchain plus Renovate-managed Bun dependencies |
-| `ancient-kingdoms-mods` | Nix toolchain plus an exact pnpm assertion that needs one synchronized owner |
-| `Teralizer` | Nix toolchain plus Gradle and Python project dependencies |
-| `HotRepl` | No Nix flake; Renovate owns its supported dependency graphs |
-
-## Operations
-
-Run every managed update:
+The [update workflow](.github/workflows/update-nix-dependencies.yml) runs on a schedule. To start it manually, use the GitHub CLI with an account that can dispatch workflows in this repository:
 
 ```sh
 gh workflow run update-nix-dependencies.yml --repo glockyco/dependency-automation
 ```
 
-Run one target:
+To update one target, pass its name from the registry:
 
 ```sh
 gh workflow run update-nix-dependencies.yml \
@@ -82,7 +18,7 @@ gh workflow run update-nix-dependencies.yml \
   -f repository=erenshor-data-mining
 ```
 
-Inspect the run and generated pull requests:
+Inspect the run and the target's pull request:
 
 ```sh
 gh run list --workflow update-nix-dependencies.yml \
@@ -91,32 +27,48 @@ gh pr list --repo glockyco/erenshor-data-mining \
   --head automation/update-nix-dependencies
 ```
 
-Before merge, inspect every changed lock or assertion and the dependency release
-notes. Merge only after the target repository's required checks pass.
+Before merging, review every changed lock or generated assertion and the dependency release notes. Merge only after the target repository's required checks pass.
 
-## Onboarding
+## What it changes
 
-Before adding a repository:
+[repositories.json](repositories.json) defines the targets, automation branches, allowed output paths and update commands. [automation.py](automation.py) runs a complete Nix flake update and any declared regeneration commands. It fails if an update changes a path outside that target's allowlist.
 
-1. Map every manifest, lock, generated assertion, and automated owner.
-1. Define the complete Nix update command sequence and its exact output paths.
-1. Add deterministic CI checks that fail on stale or incomplete generated state.
-1. Disable Renovate's Nix manager in the target repository.
-1. Add one `repositories.json` entry and its contract tests.
-1. Add the repository to the GitHub App installation.
-1. Run one targeted update and verify the App author, changed paths, and normal CI.
+The workflow uses a repository-scoped GitHub App token to create or refresh one review-only pull request per target. It does not merge pull requests or activate the updated configuration. App-authored pull requests start the target's normal CI.
 
-Do not install the App before the local ownership and failure contracts exist.
-Do not add a target-local copy of the App private key or another scheduled Nix
-updater.
+## Configure access
 
-## Key rotation
+The workflow needs the `glockyco-dependency-updater` GitHub App installed on each target. Set this repository's Actions variable `DEPENDENCY_UPDATER_CLIENT_ID` and Actions secret `DEPENDENCY_UPDATER_PRIVATE_KEY` from that App. The workflow requests contents and pull-request write access for one target per job.
+
+Keep the private key only in this repository's Actions secrets, not in target repositories. Pull-request validation does not receive the key. [AGENTS.md](AGENTS.md) defines the security boundaries for changes to the controller.
+
+To rotate the key:
 
 1. Generate a new private key in the GitHub App settings.
-1. Replace `DEPENDENCY_UPDATER_PRIVATE_KEY` in this repository.
-1. Run one update for each managed repository and confirm token creation.
-1. Delete the old key in the GitHub App settings.
+2. Replace `DEPENDENCY_UPDATER_PRIVATE_KEY` in this repository.
+3. Run one update for each registered target and confirm token creation.
+4. Delete the old key in the GitHub App settings.
 
-Do not put the private key in Git, Nix, SOPS, a password manager, shell history,
-or a local environment file. Delete the downloaded key after the repository
-secret is set and the new key is verified.
+Do not put the key in Git, Nix, SOPS, a password manager, shell history or a local environment file. Delete the downloaded key after the repository secret is set and the new key is verified.
+
+## Add a repository
+
+1. Identify each dependency manifest, lock file, generated assertion and existing updater so their responsibilities do not overlap.
+2. Define the complete Nix update command sequence and its exact output paths.
+3. Add deterministic CI checks to the target that fail on stale or incomplete generated state.
+4. Disable Renovate's Nix manager in the target.
+5. Add an entry to [repositories.json](repositories.json) and contract tests in [tests/test_automation.py](tests/test_automation.py).
+6. Add the target to the GitHub App installation.
+7. Run one targeted update and verify the App author, changed paths and normal CI.
+
+Do not install the App before the target's update and failure contracts exist. Do not add another scheduled Nix updater, as it would compete with this controller.
+
+## Development
+
+Use Python 3 and actionlint. Run the same checks as [CI](.github/workflows/ci.yml):
+
+```sh
+python3 -m unittest discover -s tests -v
+actionlint
+```
+
+[AGENTS.md](AGENTS.md) covers change boundaries and the live verification required when adding a target.
